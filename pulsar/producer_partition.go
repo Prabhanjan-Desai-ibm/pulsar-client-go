@@ -485,6 +485,7 @@ func (p *partitionProducer) reconnectToBroker(connectionClosed *connectionClosed
 		assignedBrokerURL = connectionClosed.assignedBrokerURL
 	}
 
+	reconnectStart := time.Now()
 	opFn := func() (struct{}, error) {
 		if maxRetry == 0 {
 			return struct{}{}, nil
@@ -504,7 +505,11 @@ func (p *partitionProducer) reconnectToBroker(connectionClosed *connectionClosed
 		}
 		if err == nil {
 			// Successfully reconnected
-			p.log.WithField("cnx", p._getConn().ID()).Info("Reconnected producer to broker")
+			p.log.WithFields(log.Fields{
+				"cnx":              p._getConn().ID(),
+				"downtime_seconds": time.Since(reconnectStart).Seconds(),
+				"pending_messages": p.pendingQueue.Size(),
+			}).Info("Reconnected producer to broker")
 			bo.Reset()
 			return struct{}{}, nil
 		}
@@ -534,7 +539,10 @@ func (p *partitionProducer) reconnectToBroker(connectionClosed *connectionClosed
 			p.doClose(errors.Join(ErrProducerFenced, err))
 			return struct{}{}, nil
 		}
-		p.log.WithError(err).Warn("Failed to reconnect to broker, will retry later.")
+		p.log.WithError(err).WithFields(log.Fields{
+			"downtime_seconds": time.Since(reconnectStart).Seconds(),
+			"pending_messages": p.pendingQueue.Size(),
+		}).Warn("Failed to reconnect to broker, will retry later.")
 
 		if maxRetry > 0 {
 			maxRetry--

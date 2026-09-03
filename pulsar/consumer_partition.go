@@ -2136,6 +2136,7 @@ func (pc *partitionConsumer) reconnectToBroker(connectionClosed *connectionClose
 		}
 	}
 
+	reconnectStart := time.Now()
 	opFn := func() (struct{}, error) {
 		if maxRetry == 0 {
 			return struct{}{}, nil
@@ -2154,14 +2155,20 @@ func (pc *partitionConsumer) reconnectToBroker(connectionClosed *connectionClose
 		}
 		if err == nil {
 			// Successfully reconnected
-			pc.log.Info("Reconnected consumer to broker")
+			pc.log.WithFields(log.Fields{
+				"downtime_seconds": time.Since(reconnectStart).Seconds(),
+				"subscription":     pc.options.subscription,
+			}).Info("Reconnected consumer to broker")
 			bo.Reset()
 			if pc.options.enableZeroQueueConsumer && pc.options.zeroQueueReconnectedPolicy != nil {
 				pc.options.zeroQueueReconnectedPolicy(pc)
 			}
 			return struct{}{}, nil
 		}
-		pc.log.WithError(err).Error("Failed to create consumer at reconnect")
+		pc.log.WithError(err).WithFields(log.Fields{
+			"downtime_seconds": time.Since(reconnectStart).Seconds(),
+			"subscription":     pc.options.subscription,
+		}).Error("Failed to create consumer at reconnect")
 		if isNonRetriableSubscribeError(err) {
 			pc.log.WithError(err).Warn("Non-retriable error during reconnect, giving up")
 			notifyReconnectGiveUp(err)

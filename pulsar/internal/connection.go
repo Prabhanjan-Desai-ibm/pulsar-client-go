@@ -443,10 +443,17 @@ func (c *connection) runPingCheck(pingCheckTicker *time.Ticker) {
 		case <-c.closeCh:
 			return
 		case <-pingCheckTicker.C:
-			if c.lastDataReceived().Add(2 * c.keepAliveInterval).Before(time.Now()) {
+			silentFor := time.Since(c.lastDataReceived())
+			threshold := 2 * c.keepAliveInterval
+			if silentFor > threshold {
 				// We have not received a response to the previous Ping request, the
 				// connection to broker is stale
-				c.log.Warn("Detected stale connection to broker")
+				c.log.WithFields(log.Fields{
+					"silent_for_seconds":    silentFor.Seconds(),
+					"threshold_seconds":     threshold.Seconds(),
+					"keep_alive_interval_s": c.keepAliveInterval.Seconds(),
+					"broker":                c.logicalAddr.String(),
+				}).Warn("Detected stale connection to broker")
 				c.Close()
 				return
 			}
@@ -1057,6 +1064,12 @@ func (c *connection) WaitForClose() <-chan struct{} {
 func (c *connection) Close() {
 	c.closeOnce.Do(func() {
 		listeners, consumerHandlers, cnx := c.closeAndEmptyObservers()
+
+		c.log.WithFields(log.Fields{
+			"broker":             c.logicalAddr.String(),
+			"producers_affected": len(listeners),
+			"consumers_affected": len(consumerHandlers),
+		}).Warn("Connection closing — notifying producers and consumers")
 
 		if cnx != nil {
 			_ = cnx.Close()
