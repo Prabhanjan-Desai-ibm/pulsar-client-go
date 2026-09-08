@@ -1,4 +1,4 @@
-module github.com/Prabhanjan-Desai-ibm/koddi-pulsar-client
+module github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client
 
 go 1.25.0
 

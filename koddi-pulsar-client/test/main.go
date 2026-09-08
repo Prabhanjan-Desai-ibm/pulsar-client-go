@@ -6,13 +6,9 @@
 //   cd koddi-pulsar-client/test
 //   PULSAR_URL=pulsar://localhost:6650 go run main.go
 //
-// What it does:
-//   1. Creates a Koddi client
-//   2. Creates a producer on "test-topic"
-//   3. Sends 5 messages and checks they are acked
-//   4. Creates a consumer on "test-topic"
-//   5. Receives 5 messages and acks them
-//   6. Prints all JSON logs to stdout — this is what Splunk will see
+// Disconnection simulation:
+//   While this is running, stop the broker (Ctrl+C in Docker terminal),
+//   wait a few seconds, then restart it. Watch the reconnect logs fire.
 package main
 
 import (
@@ -21,7 +17,7 @@ import (
 	"os"
 	"time"
 
-	koddi "github.com/Prabhanjan-Desai-ibm/koddi-pulsar-client"
+	koddi "github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client"
 	"github.com/apache/pulsar-client-go/pulsar"
 )
 
@@ -33,20 +29,17 @@ func main() {
 	}
 	jwtToken := os.Getenv("PULSAR_TOKEN") // leave empty if no auth needed
 
-	fmt.Println("=== KODDI PULSAR CLIENT TEST ===")
+	fmt.Println("=== KODDI PULSAR CLIENT DISCONNECTION TEST ===")
 	fmt.Println("Broker:", brokerURL)
-	fmt.Println("Watch the JSON lines below — these are what Splunk will see")
-	fmt.Println("=================================")
+	fmt.Println(">> Kill the broker now to see disconnection logs, then restart it.")
+	fmt.Println(">> Ctrl+C to stop the test.")
+	fmt.Println("==============================================")
 
 	// ── 2. Create the Koddi client ────────────────────────────────────────────
 	client, err := koddi.NewClient(koddi.Config{
 		BrokerURL:   brokerURL,
-		ClusterName: "local-test",                      // shows up in every log line
+		ClusterName: "local-test",
 		JWTToken:    jwtToken,
-		// These are the tuned defaults baked in:
-		// KeepAliveInterval:       10s
-		// ConnectionTimeout:       15s
-		// MaxConnectionsPerBroker: 3
 	})
 	if err != nil {
 		fmt.Println("FAILED to create client:", err)
@@ -56,32 +49,7 @@ func main() {
 
 	topic := "persistent://public/default/koddi-test-topic"
 
-	// ── 3. Create producer and send 5 messages ────────────────────────────────
-	fmt.Println("\n--- PRODUCER TEST ---")
-
-	producer, err := client.NewProducer(koddi.ProducerConfig{
-		Topic: topic,
-	})
-	if err != nil {
-		fmt.Println("FAILED to create producer:", err)
-		os.Exit(1)
-	}
-	defer producer.Close()
-
-	ctx := context.Background()
-	for i := 1; i <= 5; i++ {
-		payload := fmt.Sprintf("koddi-test-message-%d", i)
-		msgID, err := koddi.Send(ctx, producer, []byte(payload))
-		if err != nil {
-			fmt.Printf("FAILED to send message %d: %v\n", i, err)
-			os.Exit(1)
-		}
-		fmt.Printf("✓ Sent message %d — msgID: %s\n", i, msgID.String())
-	}
-
-	// ── 4. Create consumer and receive 5 messages ─────────────────────────────
-	fmt.Println("\n--- CONSUMER TEST ---")
-
+	// ── 3. Create consumer first ──────────────────────────────────────────────
 	consumer, err := client.NewConsumer(koddi.ConsumerConfig{
 		Topic:            topic,
 		SubscriptionName: "koddi-test-sub",
@@ -93,22 +61,50 @@ func main() {
 	}
 	defer consumer.Close()
 
-	for i := 1; i <= 5; i++ {
-		// Use a timeout so the test doesn't hang if messages weren't produced
-		receiveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		msg, err := consumer.Receive(receiveCtx)
-		cancel()
+	// ── 4. Create producer ────────────────────────────────────────────────────
+	producer, err := client.NewProducer(koddi.ProducerConfig{
+		Topic: topic,
+	})
+	if err != nil {
+		fmt.Println("FAILED to create producer:", err)
+		os.Exit(1)
+	}
+	defer producer.Close()
 
+	fmt.Println("\n[RUNNING] Sending one message every 3 seconds. Kill the broker to simulate disconnection.\n")
+
+	ctx := context.Background()
+	i := 0
+	for {
+		i++
+		payload := fmt.Sprintf("koddi-msg-%d", i)
+
+		// Send — will fail during disconnection, succeed after reconnect
+		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		msgID, err := koddi.Send(sendCtx, producer, []byte(payload))
+		cancel()
 		if err != nil {
-			fmt.Printf("FAILED to receive message %d: %v\n", i, err)
-			os.Exit(1)
+			fmt.Printf("[%s] ✗ Send #%d FAILED: %v\n", timestamp(), i, err)
+		} else {
+			fmt.Printf("[%s] ✓ Send #%d OK — msgID: %s\n", timestamp(), i, msgID.String())
 		}
 
-		fmt.Printf("✓ Received message %d — payload: %s\n", i, string(msg.Payload()))
-		consumer.Ack(msg)
-	}
+		// Receive — drain whatever arrived
+		for {
+			recvCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			msg, err := consumer.Receive(recvCtx)
+			cancel()
+			if err != nil {
+				break // nothing waiting, move on
+			}
+			fmt.Printf("[%s] ✓ Recv: %s\n", timestamp(), string(msg.Payload()))
+			consumer.Ack(msg)
+		}
 
-	fmt.Println("\n=== ALL TESTS PASSED ===")
-	fmt.Println("Check the JSON lines above — every line with 'source':'koddi-pulsar-client'")
-	fmt.Println("is what will appear in Splunk when Koddi runs this client.")
+		time.Sleep(3 * time.Second)
+	}
+}
+
+func timestamp() string {
+	return time.Now().Format("15:04:05")
 }
