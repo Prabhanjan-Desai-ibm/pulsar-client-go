@@ -927,7 +927,7 @@ func (c *connection) deletePendingProducers(producerID uint64) (ConnectionListen
 
 func (c *connection) handleCloseConsumer(closeConsumer *pb.CommandCloseConsumer) {
 	consumerID := closeConsumer.GetConsumerId()
-	c.log.Infof("Broker notification of Closed consumer: %d", consumerID)
+	c.log.WithField("side", "broker").Warnf("Broker closed consumer: %d", consumerID)
 
 	if consumer, ok := c.consumerHandler(consumerID); ok {
 		consumer.ConnectionClosed(closeConsumer)
@@ -948,7 +948,7 @@ func (c *connection) handleActiveConsumerChange(consumerChange *pb.CommandActive
 }
 
 func (c *connection) handleCloseProducer(closeProducer *pb.CommandCloseProducer) {
-	c.log.Infof("Broker notification of Closed producer: %d", closeProducer.GetProducerId())
+	c.log.WithField("side", "broker").Warnf("Broker closed producer: %d", closeProducer.GetProducerId())
 	producerID := closeProducer.GetProducerId()
 
 	producer, ok := c.deletePendingProducers(producerID)

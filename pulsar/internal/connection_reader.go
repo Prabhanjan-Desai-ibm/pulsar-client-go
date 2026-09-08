@@ -42,7 +42,7 @@ func (r *connectionReader) readFromConnection() {
 		cmd, headersAndPayload, err := r.readSingleCommand()
 		if err != nil {
 			if !r.cnx.closed() {
-				r.cnx.log.WithError(err).Infof("Error reading from connection")
+				r.cnx.log.WithError(err).WithField("side", "client").Warn("Error reading from connection")
 				r.cnx.Close()
 			}
 			break
