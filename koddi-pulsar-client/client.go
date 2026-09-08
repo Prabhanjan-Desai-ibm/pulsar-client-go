@@ -49,6 +49,12 @@ type Config struct {
 	// More connections = PING contends less with message sends.
 	// Default: 3
 	MaxConnectionsPerBroker int
+
+	// TLSAllowInsecureConnection disables TLS certificate verification.
+	// Only use this for internal cluster testing where the cert CN does not
+	// match the broker hostname (e.g. connecting via internal k8s DNS).
+	// Never set this in production.
+	TLSAllowInsecureConnection bool
 }
 
 func (c *Config) applyDefaults() {
@@ -100,6 +106,9 @@ func NewClient(cfg Config) (*Client, error) {
 
 	if cfg.TLSTrustCertsFilePath != "" {
 		opts.TLSTrustCertsFilePath = cfg.TLSTrustCertsFilePath
+	}
+	if cfg.TLSAllowInsecureConnection {
+		opts.TLSAllowInsecureConnection = true
 	}
 
 	if cfg.JWTToken != "" {
