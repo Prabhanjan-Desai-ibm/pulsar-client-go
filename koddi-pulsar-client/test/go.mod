@@ -3,7 +3,7 @@ module github.com/Prabhanjan-Desai-ibm/koddi-pulsar-client-test
 go 1.25.0
 
 require (
-	github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.0
+	github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v0.0.0
 	github.com/apache/pulsar-client-go v0.21.1
 )
 
@@ -59,8 +59,8 @@ require (
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
-// Resolve the wrapper from its tagged release
-replace github.com/Prabhanjan-Desai-ibm/koddi-pulsar-client => github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.0
+// Use local source on disk — always picks up your latest changes
+replace github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client => ../
 
-// Resolve the fork (same as in wrapper's go.mod)
-replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pulsar-client-go v0.21.1
+// Route the fork import to the local fork on disk
+replace github.com/apache/pulsar-client-go => ../../

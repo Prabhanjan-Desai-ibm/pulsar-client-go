@@ -10,7 +10,7 @@ Wraps [`apache/pulsar-client-go`](https://github.com/apache/pulsar-client-go) wi
 Add to your `go.mod`:
 
 ```go
-require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.3
+require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.4
 
 replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pulsar-client-go v0.21.1
 ```
@@ -18,7 +18,7 @@ replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pu
 Then run:
 
 ```bash
-go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.3
+go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.4
 go mod tidy
 ```
 
@@ -116,7 +116,7 @@ The full disconnection lifecycle produces these logs in order:
 | 1 | `Error reading from connection` | **warn** | `error`, `side=client` | Network drop, TCP reset, EOF |
 | 1 | `Broker closed producer: <id>` | **warn** | `side=broker` | Broker deliberately closed the producer |
 | 1 | `Broker closed consumer: <id>` | **warn** | `side=broker` | Broker deliberately closed the consumer |
-| 2 | `Connection closing — notifying producers and consumers` | **warn** | `producers_affected`, `consumers_affected` | Connection teardown |
+| 2 | `Connection closing — notifying producers and consumers` | **warn** | `producers_affected`, `consumers_affected`, `write_queue_depth`, `write_queue_cap`, `last_ping_sent_ago_s`, `last_pong_received_ago_s` | Connection teardown |
 | 3 | `Failed to reconnect to broker, will retry later.` | **warn** | `error`, `downtime_seconds`, `pending_messages` | Each failed reconnect attempt |
 | 4 | `Reconnected producer to broker` | info | `downtime_seconds`, `pending_messages` | Producer recovery confirmed |
 | 4 | `Reconnected consumer to broker` | info | `downtime_seconds`, `subscription` | Consumer recovery confirmed |
@@ -145,10 +145,19 @@ source="koddi-pulsar-client" msg="KODDI consumer CLOSED by internal error"
 
 ```json
 {"level":"warn","side":"client","error":"dial tcp 10.100.91.147:6651: connect: connection refused","msg":"Error reading from connection","cluster":"astradev-aws","source":"koddi-pulsar-client"}
-{"level":"warn","msg":"Connection closing — notifying producers and consumers","producers_affected":1,"consumers_affected":1,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"warn","msg":"Connection closing — notifying producers and consumers","producers_affected":1,"consumers_affected":1,"write_queue_depth":0,"write_queue_cap":256,"last_ping_sent_ago_s":3.1,"last_pong_received_ago_s":3.1,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
 {"level":"info","msg":"Reconnected producer to broker","downtime_seconds":3.2,"pending_messages":0,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
 {"level":"info","msg":"Reconnected consumer to broker","downtime_seconds":3.2,"subscription":"koddi-sub","cluster":"astradev-aws","source":"koddi-pulsar-client"}
 ```
+
+### Example log output during a silent network drop (stale PING detection)
+
+```json
+{"level":"warn","msg":"Detected stale connection to broker","silent_for_seconds":20.1,"threshold_seconds":20.0,"broker":"pulsar+ssl://proxy:6651","cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"warn","msg":"Connection closing — notifying producers and consumers","producers_affected":1,"consumers_affected":1,"write_queue_depth":2,"write_queue_cap":256,"last_ping_sent_ago_s":10.1,"last_pong_received_ago_s":20.4,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
+```
+
+> `last_pong_received_ago_s` ≈ 2× `last_ping_sent_ago_s` means two PINGs were sent with no PONG reply — the broker went silent before the connection was torn down.
 
 ---
 
