@@ -157,6 +157,12 @@ type connection struct {
 	lastDataReceivedLock sync.Mutex
 	lastDataReceivedTime time.Time
 
+	// lastPingSentNs and lastPongReceivedNs store Unix nanoseconds set via
+	// atomic operations so they can be read from the Close() path without
+	// additional locking.
+	lastPingSentNs      atomic.Int64
+	lastPongReceivedNs  atomic.Int64
+
 	log log.Logger
 
 	incomingRequestsWG sync.WaitGroup
@@ -842,11 +848,13 @@ func (c *connection) setLastDataReceived(t time.Time) {
 }
 
 func (c *connection) sendPing() {
+	c.lastPingSentNs.Store(time.Now().UnixNano())
 	c.log.Debug("Sending PING")
 	c.writeCommand(baseCommand(pb.BaseCommand_PING, &pb.CommandPing{}))
 }
 
 func (c *connection) handlePong() {
+	c.lastPongReceivedNs.Store(time.Now().UnixNano())
 	c.log.Debug("Received PONG response")
 }
 
@@ -1065,10 +1073,24 @@ func (c *connection) Close() {
 	c.closeOnce.Do(func() {
 		listeners, consumerHandlers, cnx := c.closeAndEmptyObservers()
 
+		// Capture queue depth and ping/pong ages at the moment of disconnect.
+		now := time.Now()
+		var lastPingSentAgoS, lastPongReceivedAgoS float64
+		if ns := c.lastPingSentNs.Load(); ns > 0 {
+			lastPingSentAgoS = now.Sub(time.Unix(0, ns)).Seconds()
+		}
+		if ns := c.lastPongReceivedNs.Load(); ns > 0 {
+			lastPongReceivedAgoS = now.Sub(time.Unix(0, ns)).Seconds()
+		}
+
 		c.log.WithFields(log.Fields{
-			"broker":             c.logicalAddr.String(),
-			"producers_affected": len(listeners),
-			"consumers_affected": len(consumerHandlers),
+			"broker":                   c.logicalAddr.String(),
+			"producers_affected":       len(listeners),
+			"consumers_affected":       len(consumerHandlers),
+			"write_queue_depth":        len(c.writeRequestsCh),
+			"write_queue_cap":          cap(c.writeRequestsCh),
+			"last_ping_sent_ago_s":     lastPingSentAgoS,
+			"last_pong_received_ago_s": lastPongReceivedAgoS,
 		}).Warn("Connection closing — notifying producers and consumers")
 
 		if cnx != nil {
