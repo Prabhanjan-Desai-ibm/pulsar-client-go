@@ -1,14 +1,23 @@
-// This is your LOCAL TEST program.
-// Run this against a real Pulsar broker to verify the custom client works
-// and all debug logs appear correctly before handing it to Koddi.
+// Disconnection demo — run this binary on the bastion pod against the dev cluster.
 //
-// How to run:
-//   cd koddi-pulsar-client/test
-//   PULSAR_URL=pulsar://localhost:6650 go run main.go
+// Build for Linux (from your Mac):
 //
-// Disconnection simulation:
-//   While this is running, stop the broker (Ctrl+C in Docker terminal),
-//   wait a few seconds, then restart it. Watch the reconnect logs fire.
+//	cd koddi-pulsar-client/test
+//	GOOS=linux GOARCH=amd64 go build -o koddi-test .
+//
+// Copy to bastion:
+//
+//	kubectl cp koddi-test pulsar/<bastion-pod>:/tmp/koddi-test
+//	kubectl exec -n pulsar <bastion-pod> -- chmod +x /tmp/koddi-test
+//
+// Run on bastion:
+//
+//	export PULSAR_URL=pulsar+ssl://astradev-aws-proxy.pulsar.svc.cluster.local:6651
+//	export PULSAR_CLUSTER=astradev-aws
+//	export PULSAR_TOKEN=$(cat /pulsar/token-superuser-stripped.jwt)
+//	export PULSAR_TLS_SKIP_VERIFY=true
+//	export PULSAR_TOPIC=persistent://koddi-dev/debug/koddi-test-topic
+//	/tmp/koddi-test
 package main
 
 import (
@@ -22,24 +31,38 @@ import (
 )
 
 func main() {
-	// ── 1. Read broker URL from env or use localhost default ──────────────────
-	brokerURL := os.Getenv("PULSAR_URL")
+	brokerURL := env("PULSAR_URL", "")
+	clusterName := env("PULSAR_CLUSTER", "")
+	jwtToken := env("PULSAR_TOKEN", "")
+	tlsCert := env("PULSAR_TLS_CERT", "")
+	tlsSkipVerify := os.Getenv("PULSAR_TLS_SKIP_VERIFY") == "true"
+	topic := env("PULSAR_TOPIC", "persistent://public/default/koddi-test-topic")
+
 	if brokerURL == "" {
-		brokerURL = "pulsar://localhost:6650"
+		fmt.Println("ERROR: PULSAR_URL is not set")
+		fmt.Println("  export PULSAR_URL=pulsar+ssl://<proxy>:6651")
+		os.Exit(1)
 	}
-	jwtToken := os.Getenv("PULSAR_TOKEN") // leave empty if no auth needed
+	if clusterName == "" {
+		fmt.Println("ERROR: PULSAR_CLUSTER is not set")
+		fmt.Println("  export PULSAR_CLUSTER=astradev-aws")
+		os.Exit(1)
+	}
 
-	fmt.Println("=== KODDI PULSAR CLIENT DISCONNECTION TEST ===")
-	fmt.Println("Broker:", brokerURL)
-	fmt.Println(">> Kill the broker now to see disconnection logs, then restart it.")
-	fmt.Println(">> Ctrl+C to stop the test.")
-	fmt.Println("==============================================")
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║     KODDI PULSAR CLIENT — DISCONNECTION DEMO     ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Printf("Broker  : %s\n", brokerURL)
+	fmt.Printf("Cluster : %s\n", clusterName)
+	fmt.Printf("Topic   : %s\n", topic)
+	fmt.Printf("TLS skip: %v\n\n", tlsSkipVerify)
 
-	// ── 2. Create the Koddi client ────────────────────────────────────────────
 	client, err := koddi.NewClient(koddi.Config{
-		BrokerURL:   brokerURL,
-		ClusterName: "local-test",
-		JWTToken:    jwtToken,
+		BrokerURL:                  brokerURL,
+		ClusterName:                clusterName,
+		JWTToken:                   jwtToken,
+		TLSTrustCertsFilePath:      tlsCert,
+		TLSAllowInsecureConnection: tlsSkipVerify,
 	})
 	if err != nil {
 		fmt.Println("FAILED to create client:", err)
@@ -47,12 +70,9 @@ func main() {
 	}
 	defer client.Close()
 
-	topic := "persistent://public/default/koddi-test-topic"
-
-	// ── 3. Create consumer first ──────────────────────────────────────────────
 	consumer, err := client.NewConsumer(koddi.ConsumerConfig{
 		Topic:            topic,
-		SubscriptionName: "koddi-test-sub",
+		SubscriptionName: "koddi-demo-sub",
 		SubscriptionType: pulsar.Shared,
 	})
 	if err != nil {
@@ -61,7 +81,6 @@ func main() {
 	}
 	defer consumer.Close()
 
-	// ── 4. Create producer ────────────────────────────────────────────────────
 	producer, err := client.NewProducer(koddi.ProducerConfig{
 		Topic: topic,
 	})
@@ -71,33 +90,32 @@ func main() {
 	}
 	defer producer.Close()
 
-	fmt.Println("\n[RUNNING] Sending one message every 3 seconds. Kill the broker to simulate disconnection.\n")
+	fmt.Println("[RUNNING] Sending every 3s. Ctrl+C to stop.")
+	fmt.Println("──────────────────────────────────────────────────")
 
 	ctx := context.Background()
 	i := 0
 	for {
 		i++
-		payload := fmt.Sprintf("koddi-msg-%d", i)
-
-		// Send — will fail during disconnection, succeed after reconnect
 		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		msgID, err := koddi.Send(sendCtx, producer, []byte(payload))
+		msgID, err := koddi.Send(sendCtx, producer, []byte(fmt.Sprintf("koddi-demo-msg-%d", i)))
 		cancel()
+
+		ts := time.Now().Format("15:04:05")
 		if err != nil {
-			fmt.Printf("[%s] ✗ Send #%d FAILED: %v\n", timestamp(), i, err)
+			fmt.Printf("[%s] ✗ Send #%d FAILED: %v\n", ts, i, err)
 		} else {
-			fmt.Printf("[%s] ✓ Send #%d OK — msgID: %s\n", timestamp(), i, msgID.String())
+			fmt.Printf("[%s] ✓ Send #%d OK  msgID=%s\n", ts, i, msgID.String())
 		}
 
-		// Receive — drain whatever arrived
 		for {
 			recvCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 			msg, err := consumer.Receive(recvCtx)
 			cancel()
 			if err != nil {
-				break // nothing waiting, move on
+				break
 			}
-			fmt.Printf("[%s] ✓ Recv: %s\n", timestamp(), string(msg.Payload()))
+			fmt.Printf("[%s] ✓ Recv: %s\n", time.Now().Format("15:04:05"), string(msg.Payload()))
 			consumer.Ack(msg)
 		}
 
@@ -105,6 +123,9 @@ func main() {
 	}
 }
 
-func timestamp() string {
-	return time.Now().Format("15:04:05")
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
