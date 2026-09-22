@@ -109,17 +109,39 @@ func main() {
 
 Every log line is a JSON object with `source: "koddi-pulsar-client"` and `cluster: "<ClusterName>"` fields.
 
-The full disconnection lifecycle produces these logs in order:
+### Who caused the disconnect — the `side` field
+
+Every disconnect is tagged so you immediately know which team to investigate:
+
+| `side` value | Log message | Cause | Investigate |
+|---|---|---|---|
+| `side=client` | `Error reading from connection` | TCP dropped — network cut, proxy crash, pod restart | Infrastructure / k8s |
+| `side=broker` | `Broker closed producer/consumer` | Broker sent explicit CLOSE — rebalance, topic deleted, auth expired | Pulsar ops |
+| _(no side)_ | `Detected stale connection to broker` | Silent packet drop — PINGs unanswered for 20s | Network / firewall |
+
+### Full disconnection lifecycle
 
 | # | `msg` | `level` | Key fields | When it fires |
 |---|---|---|---|---|
 | 1 | `Error reading from connection` | **warn** | `error`, `side=client` | Network drop, TCP reset, EOF |
 | 1 | `Broker closed producer: <id>` | **warn** | `side=broker` | Broker deliberately closed the producer |
 | 1 | `Broker closed consumer: <id>` | **warn** | `side=broker` | Broker deliberately closed the consumer |
+| 1 | `Detected stale connection to broker` | **warn** | `silent_for_seconds`, `threshold_seconds` | No PONG received for 2× keepAliveInterval |
 | 2 | `Connection closing — notifying producers and consumers` | **warn** | `producers_affected`, `consumers_affected`, `write_queue_depth`, `write_queue_cap`, `last_ping_sent_ago_s`, `last_pong_received_ago_s` | Connection teardown |
 | 3 | `Failed to reconnect to broker, will retry later.` | **warn** | `error`, `downtime_seconds`, `pending_messages` | Each failed reconnect attempt |
 | 4 | `Reconnected producer to broker` | info | `downtime_seconds`, `pending_messages` | Producer recovery confirmed |
 | 4 | `Reconnected consumer to broker` | info | `downtime_seconds`, `subscription` | Consumer recovery confirmed |
+
+### New fields on the disconnect log — what they mean
+
+| Field | What it tells you |
+|---|---|
+| `write_queue_depth` | Buffered sends waiting to go out at disconnect — if high, write loop was congested |
+| `write_queue_cap` | Total channel capacity (256) — compare to depth for % full |
+| `last_ping_sent_ago_s` | Seconds since last PING was sent — if large, PING loop was stalled |
+| `last_pong_received_ago_s` | Seconds since broker last replied — if ≈ 2× ping value, broker went silent before disconnect |
+| `downtime_seconds` | Exact recovery time — measurable SLA |
+| `pending_messages` | Messages buffered during outage — confirms zero message loss on reconnect |
 
 ### Splunk searches
 
@@ -127,17 +149,26 @@ The full disconnection lifecycle produces these logs in order:
 # Any disconnection
 source="koddi-pulsar-client" level=warn
 
-# Network-side drop (EOF, connection reset, connection refused)
-source="koddi-pulsar-client" msg="Error reading from connection" side=client
+# Network/infra issue — page infrastructure team
+source="koddi-pulsar-client" side=client
 
-# Broker deliberately closed a producer or consumer
+# Broker kicked us out — page Pulsar ops
 source="koddi-pulsar-client" side=broker
+
+# Silent network drop — broker went silent
+source="koddi-pulsar-client" msg="Detected stale connection to broker"
+
+# SLA breach — downtime over 30 seconds
+source="koddi-pulsar-client" downtime_seconds>30
+
+# Queue was congested at disconnect
+source="koddi-pulsar-client" write_queue_depth>50
 
 # Recoveries — check downtime_seconds for SLA
 source="koddi-pulsar-client" msg="Reconnected producer to broker"
 source="koddi-pulsar-client" msg="Reconnected consumer to broker"
 
-# Consumer gave up reconnecting (needs alerting)
+# Consumer gave up reconnecting — needs immediate alert
 source="koddi-pulsar-client" msg="KODDI consumer CLOSED by internal error"
 ```
 
