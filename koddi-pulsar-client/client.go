@@ -74,8 +74,9 @@ func (c *Config) applyDefaults() {
 // Client is the Koddi wrapper around pulsar.Client.
 // Create one per application process and reuse it.
 type Client struct {
-	inner pulsar.Client
-	log   *debugLogger
+	inner  pulsar.Client
+	log    *debugLogger
+	stopCh chan struct{} // closed by Close() to stop background goroutines
 }
 
 // NewClient creates a new Koddi Pulsar client with all debug settings applied.
@@ -122,12 +123,13 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	log.write("info", "KODDI pulsar client created")
-	return &Client{inner: inner, log: log}, nil
+	return &Client{inner: inner, log: log, stopCh: make(chan struct{})}, nil
 }
 
 // Close shuts down the client and releases all resources.
 func (c *Client) Close() {
 	c.log.write("info", "KODDI pulsar client closing")
+	close(c.stopCh)
 	c.inner.Close()
 }
 
@@ -146,7 +148,13 @@ type ProducerConfig struct {
 	SendTimeout time.Duration
 }
 
-// NewProducer creates a producer with the debug interceptor and tuned backoff attached.
+// latencyFlushInterval is how often the background goroutine emits a latency
+// snapshot. One line per minute — minimal log volume.
+const latencyFlushInterval = 60 * time.Second
+
+// NewProducer creates a producer with the latency-tracking interceptor and
+// tuned backoff attached. A background goroutine emits a latency snapshot
+// (p50/p99/max/avg) every 60s — stopped when the client is closed.
 //
 // Example:
 //
@@ -154,18 +162,16 @@ type ProducerConfig struct {
 func (c *Client) NewProducer(cfg ProducerConfig) (pulsar.Producer, error) {
 	c.log.write("info", "KODDI creating producer | topic="+cfg.Topic)
 
+	interceptor := newProducerInterceptor(c.log, cfg.Topic)
+
 	opts := pulsar.ProducerOptions{
 		Topic: cfg.Topic,
 
-		// Debug interceptor — logs BeforeSend and OnSendAcknowledgement
-		Interceptors: pulsar.ProducerInterceptors{
-			newProducerInterceptor(c.log),
-		},
+		// Latency-tracking interceptor — records RTT per message, logs snapshot
+		// every 60s and immediately on any send failure.
+		Interceptors: pulsar.ProducerInterceptors{interceptor},
 
 		// Faster initial reconnect attempts.
-		// Default starts at 100ms doubling to 60s.
-		// This starts at 200ms doubling to 60s — a bit more conservative
-		// to avoid hammering the broker during a restart.
 		BackOffPolicyFunc: func() backoff.Policy {
 			return backoff.NewDefaultBackoffWithInitialBackOff(200 * time.Millisecond)
 		},
@@ -185,7 +191,28 @@ func (c *Client) NewProducer(cfg ProducerConfig) (pulsar.Producer, error) {
 	}
 
 	c.log.write("info", "KODDI producer created | topic="+cfg.Topic+" name="+producer.Name())
+
+	// Background goroutine: flush latency snapshot every 60s.
+	go c.runLatencyFlusher(interceptor, cfg.Topic)
+
 	return producer, nil
+}
+
+// runLatencyFlusher periodically logs a latency snapshot for the given producer.
+// Exits cleanly when the client is closed.
+func (c *Client) runLatencyFlusher(interceptor *debugProducerInterceptor, topic string) {
+	ticker := time.NewTicker(latencyFlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			if s := interceptor.latency.snapshot(); s != nil {
+				s.log(c.log, topic, "periodic")
+			}
+		}
+	}
 }
 
 // ── Consumer ──────────────────────────────────────────────────────────────────

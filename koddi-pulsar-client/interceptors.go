@@ -2,72 +2,85 @@ package koddi
 
 import (
 	"fmt"
+	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 )
 
 // ── Producer interceptor ──────────────────────────────────────────────────────
 //
-// Hooks into every send and every ack/failure.
-// Tracks send latency so you can see in Splunk if sends start getting
-// slow RIGHT BEFORE a disconnection — this is the signal that the
-// write loop is congested and PINGs are being delayed.
+// Tracks publish round-trip latency (BeforeSend → OnSendAcknowledgement).
+// Per-message debug logs are intentionally omitted to avoid log volume overhead.
+// A latency snapshot (p50/p99/max/avg) is emitted:
+//   - every 60s via a background goroutine in client.go
+//   - immediately on any send failure
 
 type debugProducerInterceptor struct {
 	log     *debugLogger
-	sentAt  map[string]time.Time // msgID string → time sent (approximate)
+	topic   string
+	latency *latencyTracker
+
+	// sentAt maps *ProducerMessage pointer → send time.
+	// The Pulsar library passes the same pointer to both BeforeSend and
+	// OnSendAcknowledgement so the pointer is stable for this pair.
+	sentAtMu sync.Mutex
+	sentAt   map[uintptr]time.Time
 }
 
-func newProducerInterceptor(log *debugLogger) pulsar.ProducerInterceptor {
+func newProducerInterceptor(log *debugLogger, topic string) *debugProducerInterceptor {
 	return &debugProducerInterceptor{
-		log:    log,
-		sentAt: make(map[string]time.Time),
+		log:     log,
+		topic:   topic,
+		latency: &latencyTracker{},
+		sentAt:  make(map[uintptr]time.Time),
 	}
 }
 
-// BeforeSend is called just before the message leaves the client.
-// We log the topic and payload size so you can see message volume over time.
-func (p *debugProducerInterceptor) BeforeSend(producer pulsar.Producer, msg *pulsar.ProducerMessage) {
-	p.log.write("debug", fmt.Sprintf(
-		"KODDI producer sending | topic=%s payload_bytes=%d properties=%v",
-		producer.Topic(),
-		len(msg.Payload),
-		msg.Properties,
-	))
+// BeforeSend stamps the send time — no log emitted (avoids per-message noise).
+func (p *debugProducerInterceptor) BeforeSend(_ pulsar.Producer, msg *pulsar.ProducerMessage) {
+	key := uintptr(unsafe.Pointer(msg)) //nolint:unsafeptr
+	p.sentAtMu.Lock()
+	p.sentAt[key] = time.Now()
+	p.sentAtMu.Unlock()
 }
 
-// OnSendAcknowledgement is called when broker acks OR when send fails.
-// err == nil  → success, log latency
-// err != nil  → failure, log the error — this is the most important one
-//               because send failures happen DURING reconnection
+// OnSendAcknowledgement records RTT on success; logs error + latency snapshot on failure.
 func (p *debugProducerInterceptor) OnSendAcknowledgement(
 	producer pulsar.Producer,
 	msg *pulsar.ProducerMessage,
 	msgID pulsar.MessageID,
 ) {
-	// msgID is nil when the send failed
+	key := uintptr(unsafe.Pointer(msg)) //nolint:unsafeptr
+	p.sentAtMu.Lock()
+	sentAt, ok := p.sentAt[key]
+	delete(p.sentAt, key)
+	p.sentAtMu.Unlock()
+
 	if msgID == nil {
+		// Send failed — log error and dump latency snapshot immediately so the
+		// disconnect context is visible in the same log stream.
 		p.log.write("error", fmt.Sprintf(
 			"KODDI producer send FAILED | topic=%s payload_bytes=%d",
-			producer.Topic(),
-			len(msg.Payload),
+			producer.Topic(), len(msg.Payload),
 		))
+		if s := p.latency.snapshot(); s != nil {
+			s.log(p.log, p.topic, "at send failure")
+		}
 		return
 	}
 
-	p.log.write("debug", fmt.Sprintf(
-		"KODDI producer send ACKed | topic=%s msgID=%s",
-		producer.Topic(),
-		msgID.String(),
-	))
+	if ok {
+		p.latency.record(time.Since(sentAt))
+	}
 }
 
 // ── Consumer interceptor ──────────────────────────────────────────────────────
 //
-// Hooks into every message delivery, every ack, every nack, and crucially
-// into the consumer CLOSE event which tells you WHY the consumer died.
-// OnConsumerClose is the most important one for Koddi's disconnection issue.
+// Keeps all existing warn/error hooks — nacks and consumer close.
+// Per-message debug logs (BeforeConsume, OnAcknowledge) are removed to avoid
+// log volume overhead; the important signal is nacks and close events.
 
 type debugConsumerInterceptor struct {
 	log *debugLogger
@@ -77,52 +90,36 @@ func newConsumerInterceptor(log *debugLogger) pulsar.ConsumerInterceptor {
 	return &debugConsumerInterceptor{log: log}
 }
 
-// BeforeConsume is called just before the message is handed to your app.
-// RedeliveryCount > 0 means this message was nacked before — useful to
-// see if reconnection caused duplicate redeliveries.
+// BeforeConsume — intentionally silent. Only redeliveries at warn level matter;
+// logging every receive would flood the output.
 func (c *debugConsumerInterceptor) BeforeConsume(msg pulsar.ConsumerMessage) {
-	c.log.write("debug", fmt.Sprintf(
-		"KODDI consumer received | topic=%s msgID=%s redelivery_count=%d",
-		msg.Topic(),
-		msg.ID().String(),
-		msg.RedeliveryCount(),
-	))
+	// Log only if this is a redelivery — means something was nacked/reconnected.
+	if msg.RedeliveryCount() > 0 {
+		c.log.write("warn", fmt.Sprintf(
+			"KODDI consumer redelivery | topic=%s msgID=%s redelivery_count=%d",
+			msg.Topic(), msg.ID().String(), msg.RedeliveryCount(),
+		))
+	}
 }
 
-// OnAcknowledge is called when your app acks a message.
-func (c *debugConsumerInterceptor) OnAcknowledge(consumer pulsar.Consumer, msgID pulsar.MessageID) {
-	c.log.write("debug", fmt.Sprintf(
-		"KODDI consumer acked | subscription=%s msgID=%s",
-		consumer.Subscription(),
-		msgID.String(),
-	))
-}
+// OnAcknowledge — silent. Acks are the happy path; no value in logging every one.
+func (c *debugConsumerInterceptor) OnAcknowledge(_ pulsar.Consumer, _ pulsar.MessageID) {}
 
-// OnNegativeAcksSend is called when messages are nacked (your app failed to process them).
-// A spike here during reconnection means messages are being redelivered.
+// OnNegativeAcksSend — warn. A spike here during reconnect means message redelivery.
 func (c *debugConsumerInterceptor) OnNegativeAcksSend(consumer pulsar.Consumer, msgIDs []pulsar.MessageID) {
 	c.log.write("warn", fmt.Sprintf(
 		"KODDI consumer nacked %d messages | subscription=%s",
-		len(msgIDs),
-		consumer.Subscription(),
+		len(msgIDs), consumer.Subscription(),
 	))
 }
 
-// OnConsumerClose is called when the consumer is permanently closed.
-// err == nil  → your app called consumer.Close() intentionally
-// err != nil  → the client closed it internally, err explains WHY:
-//               - "max retry attempts reached for reconnecting to broker"
-//               - "TopicNotFound"
-//               - "AuthorizationError"
-//               etc.
-// This is the KEY log for Koddi — it tells you exactly why the consumer
-// stopped working, with the full cause attached.
+// OnConsumerClose — error if closed internally, info if closed by application.
+// This is the key log for Koddi — tells you exactly why the consumer stopped.
 func (c *debugConsumerInterceptor) OnConsumerClose(consumer pulsar.Consumer, err error) {
 	if err != nil {
 		c.log.write("error", fmt.Sprintf(
 			"KODDI consumer CLOSED by internal error | subscription=%s cause=%v",
-			consumer.Subscription(),
-			err,
+			consumer.Subscription(), err,
 		))
 		return
 	}
