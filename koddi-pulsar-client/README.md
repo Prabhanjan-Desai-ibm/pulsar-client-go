@@ -10,7 +10,7 @@ Wraps [`apache/pulsar-client-go`](https://github.com/apache/pulsar-client-go) wi
 Add to your `go.mod`:
 
 ```go
-require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.4
+require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.5
 
 replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pulsar-client-go v0.21.1
 ```
@@ -18,7 +18,7 @@ replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pu
 Then run:
 
 ```bash
-go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.4
+go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.5
 go mod tidy
 ```
 
@@ -192,6 +192,44 @@ source="koddi-pulsar-client" msg="KODDI consumer CLOSED by internal error"
 
 ---
 
+## Publish latency tracking
+
+Every producer created via `NewProducer` has an automatic latency tracker that measures the round-trip time between `Send()` and the broker ACK. No per-message logs are emitted — only two occasions produce output:
+
+| When | Log line |
+|---|---|
+| Every **60 seconds** | Periodic snapshot over the last ≤ 1000 messages |
+| Immediately on **send failure** | Snapshot dumped alongside the error for context |
+
+### Example latency snapshot log
+
+```json
+{"level":"info","msg":"KODDI publish latency periodic | topic=persistent://koddi-dev/debug/koddi-test-topic count=120 p50=4.23ms p99=18.77ms max=34.12ms avg=5.01ms","cluster":"astradev-aws","source":"koddi-pulsar-client"}
+```
+
+```json
+{"level":"error","msg":"KODDI producer send FAILED | topic=persistent://... payload_bytes=64","cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"info","msg":"KODDI publish latency at send failure | topic=persistent://... count=87 p50=3.91ms p99=12.44ms max=12.44ms avg=4.21ms","cluster":"astradev-aws","source":"koddi-pulsar-client"}
+```
+
+### Splunk queries for latency
+
+```
+# All latency snapshots
+source="koddi-pulsar-client" msg="KODDI publish latency*"
+
+# Snapshots triggered by a send failure (correlation with disconnect)
+source="koddi-pulsar-client" msg="KODDI publish latency at send failure"
+
+# Periodic snapshots only (steady-state monitoring)
+source="koddi-pulsar-client" msg="KODDI publish latency periodic"
+
+# High p99 alert (adjust threshold as needed)
+source="koddi-pulsar-client" msg="KODDI publish latency*" | rex "p99=(?<p99_ms>[0-9.]+)ms" | where p99_ms > 100
+```
+
+---
+
 ## File structure
 
 ```
@@ -200,6 +238,7 @@ koddi-pulsar-client/
 ├── go.sum
 ├── client.go       — Config, NewClient, NewProducer, NewConsumer, Send
 ├── logger.go       — JSON stdout logger implementing pulsar/log.Logger
-├── interceptors.go — per-message producer and consumer debug interceptors
+├── interceptors.go — producer latency stamping + consumer redelivery/close hooks
+├── stats.go        — latencyTracker ring buffer, percentile computation, fmtDur
 └── README.md
 ```
