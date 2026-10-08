@@ -57,14 +57,12 @@ func (l *debugLogger) WithError(err error) pulsarlog.Entry {
 	return l.WithFields(pulsarlog.Fields{"error": err.Error()})
 }
 
-func (l *debugLogger) Debug(args ...interface{}) { l.write("debug", fmt.Sprint(args...)) }
+func (l *debugLogger) Debug(args ...interface{}) {} // suppress — too noisy for production
 func (l *debugLogger) Info(args ...interface{})  { l.write("info", fmt.Sprint(args...)) }
 func (l *debugLogger) Warn(args ...interface{})  { l.write("warn", fmt.Sprint(args...)) }
 func (l *debugLogger) Error(args ...interface{}) { l.write("error", fmt.Sprint(args...)) }
 
-func (l *debugLogger) Debugf(format string, args ...interface{}) {
-	l.write("debug", fmt.Sprintf(format, args...))
-}
+func (l *debugLogger) Debugf(format string, args ...interface{}) {} // suppress
 func (l *debugLogger) Infof(format string, args ...interface{}) {
 	l.write("info", fmt.Sprintf(format, args...))
 }
