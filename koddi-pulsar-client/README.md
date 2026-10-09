@@ -10,7 +10,7 @@ Wraps [`apache/pulsar-client-go`](https://github.com/apache/pulsar-client-go) wi
 Add to your `go.mod`:
 
 ```go
-require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.5
+require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.6
 
 replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pulsar-client-go v0.21.1
 ```
@@ -18,7 +18,7 @@ replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pu
 Then run:
 
 ```bash
-go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.5
+go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.6
 go mod tidy
 ```
 
@@ -105,9 +105,24 @@ func main() {
 
 ---
 
-## Disconnection and reconnection logs
+## Log volume
 
 Every log line is a JSON object with `source: "koddi-pulsar-client"` and `cluster: "<ClusterName>"` fields.
+
+In normal healthy operation the client emits approximately **1 line per minute** (the latency snapshot). All internal Pulsar library noise (connection setup, handshake, PING/PONG) is suppressed. Only meaningful signals are surfaced.
+
+| Scenario | Lines emitted |
+|---|---|
+| Healthy operation | ~1/min (latency snapshot) |
+| Disconnect detected | 1 line immediately |
+| Reconnect retry loop | 1 line per 30s retry |
+| Recovery confirmed | 2 lines (producer + consumer) |
+| Send failure | 2 lines (error + latency snapshot) |
+| Message redelivery | 1 line per redelivery |
+
+---
+
+## Disconnection and reconnection logs
 
 ### Who caused the disconnect — the `side` field
 
