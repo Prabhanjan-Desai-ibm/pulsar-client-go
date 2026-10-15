@@ -4,10 +4,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	pulsarlog "github.com/apache/pulsar-client-go/pulsar/log"
 )
+
+// infoAllowlist contains substrings of internal Pulsar info messages we want
+// to keep. Everything else at info level is suppressed — too noisy.
+// warn and error are always emitted.
+var infoAllowlist = []string{
+	"KODDI",               // all our own log lines
+	"Reconnected producer", // recovery confirmed
+	"Reconnected consumer", // recovery confirmed
+	"Failed to reconnect",  // retry loop
+	"Connection closing",   // disconnect event
+}
+
+func infoAllowed(msg string) bool {
+	for _, s := range infoAllowlist {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
 
 // debugLogger implements pulsar/log.Logger.
 // Every log line is written as a JSON object to stdout so it lands
@@ -57,14 +78,20 @@ func (l *debugLogger) WithError(err error) pulsarlog.Entry {
 	return l.WithFields(pulsarlog.Fields{"error": err.Error()})
 }
 
-func (l *debugLogger) Debug(args ...interface{}) {} // suppress — too noisy for production
-func (l *debugLogger) Info(args ...interface{})  { l.write("info", fmt.Sprint(args...)) }
+func (l *debugLogger) Debug(args ...interface{}) {} // suppress
+func (l *debugLogger) Info(args ...interface{}) {
+	if msg := fmt.Sprint(args...); infoAllowed(msg) {
+		l.write("info", msg)
+	}
+}
 func (l *debugLogger) Warn(args ...interface{})  { l.write("warn", fmt.Sprint(args...)) }
 func (l *debugLogger) Error(args ...interface{}) { l.write("error", fmt.Sprint(args...)) }
 
 func (l *debugLogger) Debugf(format string, args ...interface{}) {} // suppress
 func (l *debugLogger) Infof(format string, args ...interface{}) {
-	l.write("info", fmt.Sprintf(format, args...))
+	if msg := fmt.Sprintf(format, args...); infoAllowed(msg) {
+		l.write("info", msg)
+	}
 }
 func (l *debugLogger) Warnf(format string, args ...interface{}) {
 	l.write("warn", fmt.Sprintf(format, args...))
