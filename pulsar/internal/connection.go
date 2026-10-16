@@ -1083,15 +1083,20 @@ func (c *connection) Close() {
 			lastPongReceivedAgoS = now.Sub(time.Unix(0, ns)).Seconds()
 		}
 
-		c.log.WithFields(log.Fields{
-			"broker":                   c.logicalAddr.String(),
-			"producers_affected":       len(listeners),
-			"consumers_affected":       len(consumerHandlers),
-			"write_queue_depth":        len(c.writeRequestsCh),
-			"write_queue_cap":          cap(c.writeRequestsCh),
-			"last_ping_sent_ago_s":     lastPingSentAgoS,
-			"last_pong_received_ago_s": lastPongReceivedAgoS,
-		}).Warn("Connection closing — notifying producers and consumers")
+		// Only log when there are actual producers or consumers affected.
+		// Connections with 0 producers and 0 consumers are failed handshake
+		// attempts during the reconnect loop — not real disconnects.
+		if len(listeners) > 0 || len(consumerHandlers) > 0 {
+			c.log.WithFields(log.Fields{
+				"broker":                   c.logicalAddr.String(),
+				"producers_affected":       len(listeners),
+				"consumers_affected":       len(consumerHandlers),
+				"write_queue_depth":        len(c.writeRequestsCh),
+				"write_queue_cap":          cap(c.writeRequestsCh),
+				"last_ping_sent_ago_s":     lastPingSentAgoS,
+				"last_pong_received_ago_s": lastPongReceivedAgoS,
+			}).Warn("Connection closing — notifying producers and consumers")
+		}
 
 		if cnx != nil {
 			_ = cnx.Close()
