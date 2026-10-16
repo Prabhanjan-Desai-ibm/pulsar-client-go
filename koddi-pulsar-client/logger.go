@@ -10,19 +10,32 @@ import (
 	pulsarlog "github.com/apache/pulsar-client-go/pulsar/log"
 )
 
-// infoAllowlist contains substrings of internal Pulsar info messages we want
-// to keep. Everything else at info level is suppressed — too noisy.
-// warn and error are always emitted.
+// infoAllowlist — only these info messages are emitted; everything else suppressed.
 var infoAllowlist = []string{
-	"KODDI",               // all our own log lines
+	"KODDI",                // all our own log lines
 	"Reconnected producer", // recovery confirmed
 	"Reconnected consumer", // recovery confirmed
-	"Failed to reconnect",  // retry loop
-	"Connection closing",   // disconnect event
+}
+
+// warnSuppresslist — warn messages that are too noisy to be useful.
+// "Failed to connect to broker." fires on every retry attempt — it is redundant with
+// "Failed to reconnect to broker, will retry later." which already carries downtime_seconds
+// and pending_messages. Suppressing it cuts the retry-loop noise significantly.
+var warnSuppresslist = []string{
+	"Failed to connect to broker.",
 }
 
 func infoAllowed(msg string) bool {
 	for _, s := range infoAllowlist {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func warnSuppressed(msg string) bool {
+	for _, s := range warnSuppresslist {
 		if strings.Contains(msg, s) {
 			return true
 		}
@@ -84,7 +97,11 @@ func (l *debugLogger) Info(args ...interface{}) {
 		l.write("info", msg)
 	}
 }
-func (l *debugLogger) Warn(args ...interface{})  { l.write("warn", fmt.Sprint(args...)) }
+func (l *debugLogger) Warn(args ...interface{}) {
+	if msg := fmt.Sprint(args...); !warnSuppressed(msg) {
+		l.write("warn", msg)
+	}
+}
 func (l *debugLogger) Error(args ...interface{}) { l.write("error", fmt.Sprint(args...)) }
 
 func (l *debugLogger) Debugf(format string, args ...interface{}) {} // suppress
@@ -94,7 +111,9 @@ func (l *debugLogger) Infof(format string, args ...interface{}) {
 	}
 }
 func (l *debugLogger) Warnf(format string, args ...interface{}) {
-	l.write("warn", fmt.Sprintf(format, args...))
+	if msg := fmt.Sprintf(format, args...); !warnSuppressed(msg) {
+		l.write("warn", msg)
+	}
 }
 func (l *debugLogger) Errorf(format string, args ...interface{}) {
 	l.write("error", fmt.Sprintf(format, args...))
