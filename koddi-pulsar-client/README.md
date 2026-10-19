@@ -35,9 +35,9 @@ This client adds exactly that — nothing more.
 
 ---
 
-## Installation
+## How to use this client in your service
 
-Add to your `go.mod`:
+### Step 1 — Add to your `go.mod`
 
 ```go
 require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.7
@@ -45,15 +45,41 @@ require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.
 replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pulsar-client-go v0.21.1
 ```
 
-Then run:
+> **The `replace` directive is required.** It tells Go to use the Koddi fork of the Pulsar client
+> instead of the upstream Apache version. Without it the improved logging will not be included.
+
+### Step 2 — Fetch the dependency
 
 ```bash
 go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.7
 go mod tidy
 ```
 
-> The `replace` directive is required. It tells Go to use the Koddi fork of the Pulsar client
-> (which contains the improved disconnection logging) instead of the upstream Apache version.
+### Step 3 — Import and use
+
+```go
+import koddi "github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client"
+```
+
+Replace your existing `pulsar.NewClient(...)` call with `koddi.NewClient(...)`. The only new required field is `ClusterName` — set it to your cluster identifier (e.g. `"aws.eu-west-2.prod-koddi-aws-euwest2"`). It gets stamped on every log line so you can filter by cluster in Splunk.
+
+That's it. No other code changes are needed.
+
+### Step 4 — Verify logs are flowing
+
+Once deployed, you should see a line like this in Splunk within 60 seconds:
+
+```json
+{"level":"info","msg":"KODDI pulsar client created","cluster":"your-cluster-name","source":"koddi-pulsar-client","ts":"..."}
+```
+
+And a latency snapshot every 60 seconds:
+
+```json
+{"level":"info","msg":"KODDI publish latency periodic | topic=... count=20 p50=6ms p99=18ms max=18ms avg=7ms","cluster":"your-cluster-name","source":"koddi-pulsar-client"}
+```
+
+If you see these, the client is working correctly.
 
 ---
 
