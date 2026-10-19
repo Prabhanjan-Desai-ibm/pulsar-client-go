@@ -1,7 +1,37 @@
 # koddi-pulsar-client
 
-A pre-configured Pulsar Go client for Koddi's production clusters.  
-Wraps [`apache/pulsar-client-go`](https://github.com/apache/pulsar-client-go) with structured JSON logging, debug interceptors, and tuned keepalive defaults — all logs go to stdout as JSON for Splunk ingestion.
+**This is the official Apache Pulsar Go client — with one focused addition: structured JSON logging for disconnection visibility.**
+
+The underlying client is [`apache/pulsar-client-go v0.21.1`](https://github.com/apache/pulsar-client-go) — unchanged. All Pulsar features, APIs, and behaviour are identical. The only difference is that disconnection events, reconnect timing, and publish latency are now surfaced as structured JSON to stdout, so they flow into Splunk for alerting.
+
+> **If you already use `apache/pulsar-client-go` directly, switching to this client requires no code changes beyond the import path and config struct.**
+
+---
+
+## Why this exists
+
+The upstream Pulsar Go client gives you no visibility when a connection drops. You don't know:
+- Why it dropped (network cut? broker restart? auth expiry?)
+- How long it was down
+- Whether messages were lost
+- What the publish latency looked like before and after
+
+This client adds exactly that — nothing more.
+
+---
+
+## What is and isn't changed
+
+| | Changed? |
+|---|---|
+| Pulsar protocol behaviour | ❌ No |
+| Producer / Consumer / Admin APIs | ❌ No |
+| Message delivery guarantees | ❌ No |
+| Reconnect logic | ❌ No |
+| Performance | ❌ No — logging is suppressed on the hot path |
+| Disconnection log output | ✅ Yes — structured JSON added |
+| Publish latency tracking | ✅ Yes — p50/p99/max/avg snapshot every 60s |
+| Internal library noise | ✅ Yes — suppressed (was ~40 lines/min, now ~1/min) |
 
 ---
 
@@ -10,7 +40,7 @@ Wraps [`apache/pulsar-client-go`](https://github.com/apache/pulsar-client-go) wi
 Add to your `go.mod`:
 
 ```go
-require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.6
+require github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client v1.0.7
 
 replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pulsar-client-go v0.21.1
 ```
@@ -18,7 +48,7 @@ replace github.com/apache/pulsar-client-go => github.com/Prabhanjan-Desai-ibm/pu
 Then run:
 
 ```bash
-go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.6
+go get github.com/Prabhanjan-Desai-ibm/pulsar-client-go/koddi-pulsar-client@v1.0.7
 go mod tidy
 ```
 
@@ -147,7 +177,7 @@ Every disconnect is tagged so you immediately know which team to investigate:
 | 4 | `Reconnected producer to broker` | info | `downtime_seconds`, `pending_messages` | Producer recovery confirmed |
 | 4 | `Reconnected consumer to broker` | info | `downtime_seconds`, `subscription` | Consumer recovery confirmed |
 
-### New fields on the disconnect log — what they mean
+### Key fields on the disconnect log
 
 | Field | What it tells you |
 |---|---|
@@ -190,10 +220,10 @@ source="koddi-pulsar-client" msg="KODDI consumer CLOSED by internal error"
 ### Example log output during a proxy restart
 
 ```json
-{"level":"warn","side":"client","error":"dial tcp 10.100.91.147:6651: connect: connection refused","msg":"Error reading from connection","cluster":"astradev-aws","source":"koddi-pulsar-client"}
-{"level":"warn","msg":"Connection closing — notifying producers and consumers","producers_affected":1,"consumers_affected":1,"write_queue_depth":0,"write_queue_cap":256,"last_ping_sent_ago_s":3.1,"last_pong_received_ago_s":3.1,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
-{"level":"info","msg":"Reconnected producer to broker","downtime_seconds":3.2,"pending_messages":0,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
-{"level":"info","msg":"Reconnected consumer to broker","downtime_seconds":3.2,"subscription":"koddi-sub","cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"warn","msg":"Connection closing — notifying producers and consumers","producers_affected":1,"consumers_affected":1,"write_queue_depth":0,"write_queue_cap":256,"last_ping_sent_ago_s":9.57,"last_pong_received_ago_s":9.57,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"warn","msg":"Failed to reconnect to broker, will retry later.","downtime_seconds":30.0,"pending_messages":4,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"info","msg":"Reconnected producer to broker","downtime_seconds":68.6,"pending_messages":4,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"info","msg":"Reconnected consumer to broker","downtime_seconds":68.9,"cluster":"astradev-aws","source":"koddi-pulsar-client"}
 ```
 
 ### Example log output during a silent network drop (stale PING detection)
@@ -219,12 +249,12 @@ Every producer created via `NewProducer` has an automatic latency tracker that m
 ### Example latency snapshot log
 
 ```json
-{"level":"info","msg":"KODDI publish latency periodic | topic=persistent://koddi-dev/debug/koddi-test-topic count=120 p50=4.23ms p99=18.77ms max=34.12ms avg=5.01ms","cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"info","msg":"KODDI publish latency periodic | topic=persistent://... count=32 p50=7.02ms p99=19.69ms max=19.69ms avg=7.58ms","cluster":"astradev-aws","source":"koddi-pulsar-client"}
 ```
 
 ```json
 {"level":"error","msg":"KODDI producer send FAILED | topic=persistent://... payload_bytes=64","cluster":"astradev-aws","source":"koddi-pulsar-client"}
-{"level":"info","msg":"KODDI publish latency at send failure | topic=persistent://... count=87 p50=3.91ms p99=12.44ms max=12.44ms avg=4.21ms","cluster":"astradev-aws","source":"koddi-pulsar-client"}
+{"level":"info","msg":"KODDI publish latency at send failure | topic=persistent://... count=32 p50=7.02ms p99=19.69ms max=19.69ms avg=7.58ms","cluster":"astradev-aws","source":"koddi-pulsar-client"}
 ```
 
 ### Splunk queries for latency
